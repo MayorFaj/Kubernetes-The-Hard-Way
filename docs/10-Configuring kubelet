@@ -1,0 +1,199 @@
+# **Configure kubelet**
+
+In the home directory, you should have the certificates and kubeconfig file for each node. A list in the home folder should look like below:
+
+`ls -ltr`
+
+1. Get the POD_CIDR that will be used as part of network configuration
+
+```sh
+POD_CIDR=$(curl -s http://169.254.169.254/latest/user-data/ \
+  | tr "|" "\n" | grep "^pod-cidr" | cut -d"=" -f2)
+echo "${POD_CIDR}"
+
+```
+
+In case you are wondering where this $POD_CIDR is coming from. Well, this was configured at the time of creating the worker nodes. Remember the for loop below? The --user-data flag is where we specified what we want the POD_CIDR to be. It is very important to ensure that the CIDR does not overlap with EC2 IPs within the subnet. In the real world, this will be decided in collaboration with the Network team.
+
+Why do we need a network plugin? And why network configuration is crucial to implementing a Kubernetes cluster?
+
+To mitigate security risks and have a better controlled network topology, Kubernetes uses CNI (Container Network Interface) to manage Network Policies which can be used to operate the Pod network through external plugins such as Calico, Flannel or Weave Net to name a few. With these, you can set policies similar to how you would configure segurity groups in AWS and limit network communications through either cidr ipBlock, namespaceSelectors, or  podSelectors.
+
+2. Configure the bridge and loopback networks
+
+Bridge:
+
+```sh
+cat > 172-20-bridge.conf <<EOF
+{
+    "cniVersion": "0.3.1",
+    "name": "bridge",
+    "type": "bridge",
+    "bridge": "cnio0",
+    "isGateway": true,
+    "ipMasq": true,
+    "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [{"subnet": "${POD_CIDR}"}]
+        ],
+        "routes": [{"dst": "0.0.0.0/0"}]
+    }
+}
+EOF
+```
+
+Loopback:
+
+```sh
+cat > 99-loopback.conf <<EOF
+{
+    "cniVersion": "0.3.1",
+    "type": "loopback"
+}
+EOF
+```
+
+3. Move the files to the network configuration directory:
+
+`sudo mv 172-20-bridge.conf 99-loopback.conf /etc/cni/net.d/`
+
+4. Store the worker's name in a variable:
+
+```sh
+NAME=k8s-cluster-from-ground-up
+WORKER_NAME=${NAME}-$(curl -s http://169.254.169.254/latest/user-data/ \
+  | tr "|" "\n" | grep "^name" | cut -d"=" -f2)
+echo "${WORKER_NAME}"
+
+```
+
+5. Move the certificates and kubeconfig file to their respective configuration directories:
+
+```sh
+
+```
+
+6. Create the kubelet-config.yaml file
+
+Ensure the needed variables exist:
+
+```sh
+NAME=k8s-cluster-from-ground-up
+WORKER_NAME=${NAME}-$(curl -s http://169.254.169.254/latest/user-data/ \
+  | tr "|" "\n" | grep "^name" | cut -d"=" -f2)
+echo "${WORKER_NAME}"
+```
+
+```sh
+cat <<EOF | sudo tee /var/lib/kubelet/kubelet-config.yaml
+kind: KubeletConfiguration
+apiVersion: kubelet.config.k8s.io/v1beta1
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: true
+  x509:
+    clientCAFile: "/var/lib/kubernetes/ca.pem"
+authorization:
+  mode: Webhook
+clusterDomain: "cluster.local"
+clusterDNS:
+  - "10.32.0.10"
+resolvConf: "/etc/resolv.conf"
+runtimeRequestTimeout: "15m"
+tlsCertFile: "/var/lib/kubelet/${WORKER_NAME}.pem"
+tlsPrivateKeyFile: "/var/lib/kubelet/${WORKER_NAME}-key.pem"
+EOF
+```
+
+Let us talk about the configuration file `kubelet-config.yaml` and the actual configuration for a bit. Before creating the systemd file for `kubelet`, it is recommended to create the `kubelet-config.yaml` and set the configuration there rather than using multiple startup flags in systemd. You will simply point to the yaml file.
+The config file specifies where to find certificates, the DNS server, and authentication information. As you already know, `kubelet` is responsible for the containers running on the node, regardless if the runtime is Docker or Containerd; as long as the containers are being created through Kubernetes, kubelet manages them. If you run any docker or cri commands directly on a worker to create a container, bear in mind that Kubernetes is not aware of it, therefore kubelet will not manage those. Kubelet's major responsibility is to always watch the containers in its care, by default every 20 seconds, and ensuring that they are always running. Think of it as a process watcher.
+The clusterDNS is the address of the DNS server. As of Kubernetes v1.12, CoreDNS is the recommended DNS Server, hence we will go with that, rather than using legacy kube-dns.
+
+**Note:** The CoreDNS Service is named **kube-dns**(When you see kube-dns, just know that it is using CoreDNS). This is more of a backward compatibility reasons for workloads that relied on the legacy kube-dns Service name.
+
+In Kubernetes, Pods are able to find each other using service names through the internal DNS server. Every time a service is created, it gets registered in the DNS server.
+In Linux, the `/etc/resolv.conf` file is where the DNS server is configured. If you want to use Google's public DNS server (8.8.8.8) your `/etc/resolv.conf` file will have following entry:
+
+`nameserver 8.8.8.8`
+
+In Kubernetes, the **kubelet** process on a worker node configures each pod. Part of the configuration process is to create the file `/etc/resolv.conf` and specify the correct **DNS server**.
+
+7. Configure the kubelet systemd service
+
+```sh
+cat <<EOF | sudo tee /etc/systemd/system/kubelet.service
+[Unit]
+Description=Kubernetes Kubelet
+Documentation=https://github.com/kubernetes/kubernetes
+After=containerd.service
+Requires=containerd.service
+[Service]
+ExecStart=/usr/local/bin/kubelet \\
+  --config=/var/lib/kubelet/kubelet-config.yaml \\
+  --cluster-domain=cluster.local \\
+  --container-runtime=remote \\
+  --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock \\
+  --image-pull-progress-deadline=2m \\
+  --kubeconfig=/var/lib/kubelet/kubeconfig \\
+  --network-plugin=cni \\
+  --register-node=true \\
+  --v=2
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+8. Create the kube-proxy.yaml file
+
+```sh
+cat <<EOF | sudo tee /var/lib/kube-proxy/kube-proxy-config.yaml
+kind: KubeProxyConfiguration
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+clientConnection:
+  kubeconfig: "/var/lib/kube-proxy/kubeconfig"
+mode: "iptables"
+clusterCIDR: "172.31.0.0/16"
+EOF
+```
+
+9. Configure the Kube Proxy systemd service
+
+
+```sh
+cat <<EOF | sudo tee /etc/systemd/system/kube-proxy.service
+[Unit]
+Description=Kubernetes Kube Proxy
+Documentation=https://github.com/kubernetes/kubernetes
+[Service]
+ExecStart=/usr/local/bin/kube-proxy \\
+  --config=/var/lib/kube-proxy/kube-proxy-config.yaml
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Reload configurations and start both services
+
+```sh
+{
+  sudo systemctl daemon-reload
+  sudo systemctl enable containerd kubelet kube-proxy
+  sudo systemctl start containerd kubelet kube-proxy
+}
+```
+
+Now you should have the worker nodes joined to the cluster, and in a READY state.
+
+**Troubleshooting Tips:** If you have issues at this point. Consider the below:
+
+- Use journalctl -u `<service name>` to get the log output and read what might be wrong with starting up the service. You can redirect the output into a file and analyse it.
+
+- Review your PKI setup again. Ensure that the certificates you generated have the hostnames properly configured.
+

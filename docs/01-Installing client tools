@@ -1,0 +1,97 @@
+# **Installing client tools**
+
+In this lab, first, you will need some client tools installed and configured on your client workstation:
+
+- awscli – is a unified tool to manage your AWS services
+- kubectl – this command line utility will be your main control tool to manage your K8s cluster.
+- cfssl – an open source toolkit for everything TLS/SSL from Cloudflare
+- cfssljson – a program, which takes the JSON output from the cfssl and writes certificates, keys, CSRs, and bundles to disk.
+
+## **Install and configure AWS CLI**
+
+Install AWS CLI following the instructions at [https://aws.amazon.com/cli/](https://aws.amazon.com/cli/). For this you need to have a user with programmatic access keys configured in AWS Identity and Access Management (IAM), generate access keys and store them in a safe place.
+
+To configure your AWS CLI – open your shell (or cmd if using Windows) and run;
+
+```aws
+aws configure --profile %your_username%
+AWS Access Key ID [None]: AKIAIOSFODNN7EXAMPLE
+AWS Secret Access Key [None]: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+Default region name [None]: us-west-2
+Default output format [None]: json
+```
+
+Test your AWS CLI by running:
+
+`aws ec2 describe-vpcs`
+
+Confirm you can see VPC details.
+
+### **Install kubectl**
+
+Kubernetes cluster has a Web API that can receive HTTP/HTTPS requests, but it is quite cumbersome to curl an API each and every time you need to send some command, so kubectl command tool was developed to ease a K8s administrator’s life.
+With this tool you can easily interact with Kubernetes to deploy applications, inspect and manage cluster resources, view logs and perform many more administrative operations.
+
+#### Linux
+
+`wget https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kubectl`
+
+`chmod +x kubectl`
+
+`sudo mv kubectl /usr/local/bin/`
+
+[Follow this insttruction for macOS](https://kubernetes.io/docs/tasks/tools/install-kubectl-macos/)
+
+#### Verification
+
+Verify that kubectl version 1.21.0 or higher is installed:
+
+`kubectl version --output=yaml|json`
+
+Output
+
+```text
+mayor@Dev ~ % kubectl version --output=yaml     
+clientVersion:
+  buildDate: "2023-05-17T14:20:07Z"
+  compiler: gc
+  gitCommit: 7f6f68fdabc4df88cfea2dcf9a19b2b830f1e647
+  gitTreeState: clean
+  gitVersion: v1.27.2
+  goVersion: go1.20.4
+  major: "1"
+  minor: "27"
+  platform: darwin/amd64
+kustomizeVersion: v5.0.1
+```
+
+### **Install CFSSL and CFSSLJSON**
+
+cfssl and cfssljson  is used to setup a Public Key Infrastructure (PKI Infrastructure) for generating, signing and bundling TLS certificates.
+Here, cfssl will be configured as a Certificate Authority which will issue the certificates required to spin up a Kubernetes cluster.
+
+#### Linux
+
+`wget -q --show-progress --https-only --timestamping \
+  https://storage.googleapis.com/kubernetes-the-hard-way/cfssl/1.4.1/linux/cfssl \
+  https://storage.googleapis.com/kubernetes-the-hard-way/cfssl/1.4.1/linux/cfssljson`
+
+  `chmod +x cfssl cfssljson`
+
+  `sudo mv cfssl cfssljson /usr/local/bin/`
+
+For mac , run `brew install cfssl`
+
+#### Verification
+
+`cfssl version`
+
+Output
+
+```text
+mayor@Dev ~ % cfssl version     
+Version: 1.6.4
+Runtime: go1.21.1
+```
+
+Next: [Provisioning Compute Resources](../docs/02-Provisioning%20compute%20resources)

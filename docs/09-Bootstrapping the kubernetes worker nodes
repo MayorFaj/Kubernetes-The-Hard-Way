@@ -1,0 +1,174 @@
+# **Bootstraping components on the kubernetes worker nodes**
+
+In this lab you will bootstrap three Kubernetes worker nodes.
+The following components will be installed on each node: 
+
+- container networking plugins, 
+- containerd or docker
+- kubelet
+- kube-proxy.
+- runc
+
+1. SSH into the worker nodes
+
+- Worker-1
+
+```awscli
+worker_1_ip=$(aws ec2 describe-instances \
+--filters "Name=tag:Name,Values=${NAME}-worker-0" \
+--output text --query 'Reservations[].Instances[].PublicIpAddress')
+ssh -i k8s-cluster-from-ground-up.id_rsa ubuntu@${worker_1_ip}
+```
+
+- Worker-2
+
+```cli
+worker_2_ip=$(aws ec2 describe-instances \
+--filters "Name=tag:Name,Values=${NAME}-worker-1" \
+--output text --query 'Reservations[].Instances[].PublicIpAddress')
+ssh -i k8s-cluster-from-ground-up.id_rsa ubuntu@${worker_2_ip}
+```
+
+- Worker-3
+
+```cli
+worker_3_ip=$(aws ec2 describe-instances \
+--filters "Name=tag:Name,Values=${NAME}-worker-2" \
+--output text --query 'Reservations[].Instances[].PublicIpAddress')
+ssh -i k8s-cluster-from-ground-up.id_rsa ubuntu@${worker_3_ip}
+```
+
+2. Install OS dependencies:
+
+```cli
+{
+  sudo apt-get update
+  sudo apt-get -y install socat conntrack ipset
+}
+```
+
+3. Disable Swap
+
+If swap is not disabled, kubelet will not start. It is highly recommended to allow Kubernetes to handle resource allocation.
+
+Test if swap is already enabled on the host:
+
+`sudo swapon --show`
+
+If there is no output, then you are good to go. Otherwise, run below command to turn it off
+
+`sudo swapoff -a`
+
+4. Download and install a container runtime and worker binaries
+
+- Containerd
+
+Download binaries for runc, cri-ctl, and containerd
+
+```sh
+wget https://github.com/opencontainers/runc/releases/download/v1.0.0-rc93/runc.amd64 \
+  https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.21.0/crictl-v1.21.0-linux-amd64.tar.gz \
+  https://github.com/containerd/containerd/releases/download/v1.4.4/containerd-1.4.4-linux-amd64.tar.gz
+```
+
+Configure containerd:
+
+```sh
+  mkdir containerd
+  tar -xvf crictl-v1.21.0-linux-amd64.tar.gz
+  tar -xvf containerd-1.4.4-linux-amd64.tar.gz -C containerd
+  sudo mv runc.amd64 runc
+  chmod +x  crictl runc  
+  sudo mv crictl runc /usr/local/bin/
+  sudo mv containerd/bin/* /bin/
+}
+```
+
+`sudo mkdir -p /etc/containerd/`
+
+```sh
+cat << EOF | sudo tee /etc/containerd/config.toml
+[plugins]
+  [plugins.cri.containerd]
+    snapshotter = "overlayfs"
+    [plugins.cri.containerd.default_runtime]
+      runtime_type = "io.containerd.runtime.v1.linux"
+      runtime_engine = "/usr/local/bin/runc"
+      runtime_root = ""
+EOF
+```
+
+Create the containerd.service systemd unit file:
+
+```sh
+cat <<EOF | sudo tee /etc/systemd/system/containerd.service
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target
+
+[Service]
+ExecStartPre=/sbin/modprobe overlay
+ExecStart=/bin/containerd
+Restart=always
+RestartSec=5
+Delegate=yes
+KillMode=process
+OOMScoreAdjust=-999
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+5. Create installation directories to configure `kubelet`, `kube-proxy`, `cni`, and a directory to keep the `kubernetes root ca` file:
+
+```sh
+sudo mkdir -p \
+  /var/lib/kubelet \
+  /var/lib/kube-proxy \
+  /etc/cni/net.d \
+  /opt/cni/bin \
+  /var/lib/kubernetes \
+  /var/run/kubernetes
+```
+
+6. Download and Install CNI
+
+CNI (Container Network Interface), a Cloud Native Computing Foundation project, consists of a specification and libraries for writing plugins to configure network interfaces in Linux containers. It also comes with a number of plugins.
+
+Kubernetes uses CNI as an interface between network providers and Kubernetes Pod networking. Network providers create network plugin that can be used to implement the Kubernetes networking, and includes additional set of rich features that Kubernetes does not provide out of the box.
+
+Download the plugins available from [containernetworking’s](https://github.com/containernetworking/cni) GitHub repo and read more about CNIs and why it is being developed.
+
+```sh
+wget -q --show-progress --https-only --timestamping \
+  https://github.com/containernetworking/plugins/releases/download/v0.9.1/cni-plugins-linux-amd64-v0.9.1.tgz
+```
+
+Install CNI into `/opt/cni/bin/`
+
+`sudo tar -xvf cni-plugins-linux-amd64-v0.9.1.tgz -C /opt/cni/bin/`
+
+7. Download binaries for `kubectl`, `kube-proxy`, and `kubelet`
+
+```sh
+wget -q --show-progress --https-only --timestamping \
+  https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kubectl \
+  https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kube-proxy \
+  https://storage.googleapis.com/kubernetes-release/release/v1.21.0/bin/linux/amd64/kubelet
+```
+
+8. Install the downloaded binaries
+
+```sh
+{
+  chmod +x  kubectl kube-proxy kubelet  
+  sudo mv  kubectl kube-proxy kubelet /usr/local/bin/
+}
+```
+
+Next: [Configuring Kubelet](../docs/10-Configuring%20kubelet)
